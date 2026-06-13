@@ -1,6 +1,6 @@
 # RAAI Runtime Security Model™ for Agentic AI
 
-**The Security Frontier Research Series — Issue #1**  
+**The Security Frontier Research**
 **Author:** Ravindra Annam  
 **Focus:** AI Security • Cyber Security • Digital Trust
 
@@ -85,10 +85,7 @@ To:
 - Excessive autonomy
 - Weak observability and missing audit trails
 
-## Suggested Citation
 
-```text
-Annam, Ravindra. “Securing the Autonomous Frontier: The RAAI Runtime Security Model™ for Agentic AI.” The Security Frontier Research Series, 2026.
 ```
 
 ## License
