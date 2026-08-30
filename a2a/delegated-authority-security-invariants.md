@@ -2,7 +2,7 @@
 
 **Author:** Ravindra Annam  
 **Status:** Draft for Technical Co-Review  
-**Version:** 0.1  
+**Version:** 0.2
 **Date:** August 2026  
 
 > This note proposes candidate runtime security properties for delegated authority in multi-agent systems. These are not requirements of the current A2A protocol specification. The document is intended for technical co-review against the A2A authorization model and the ERDL design discussed in A2A Discussion #2031.
@@ -13,14 +13,15 @@
 
 Multi-agent systems increasingly delegate tasks across independent agents, skills, tools, APIs, and protected resources. Authentication and conventional access control establish important security boundaries, but they do not by themselves guarantee that the effective authority associated with a delegated task remains bounded throughout a multi-hop execution chain.
 
-This note proposes four runtime security invariants for delegated authority:
+This note proposes five runtime security invariants for delegated authority:
 
 1. Authority Non-Amplification
-2. Authority Provenance Continuity
+2. Authority Provenance and Temporal Continuity
 3. Constraint Inheritance / Narrow-Only Delegation
-4. Transitive Revocation Propagation
+4. Enforcement-Boundary Revocation
+5. Capability-Boundary Non-Amplification
 
-It also proposes six adversarial conformance vectors for testing these properties across:
+It also proposes eight adversarial conformance vectors for testing these properties across:
 
 **Principal → Agent → Agent → Skill → Tool/API → Protected Resource**
 
@@ -123,9 +124,24 @@ and not:
 
 A principal or upstream agent should not acquire authority indirectly by selecting a delegatee possessing privileges unavailable to the originating task.
 
+### Delegation Depth and Loop Safety
+
+Authority non-amplification alone does not prevent unbounded or cyclic delegation.
+
+A delegation chain MUST NOT exceed the configured maximum delegation depth. Implementations MUST detect and reject delegation loops or repeated chain elements.
+
+The delegation-depth constraint is independent of the authority ceiling: a delegation may remain within the originating authority scope and still be invalid because the permitted delegation depth has been exceeded.
+
+Accordingly, a conforming implementation MUST validate both:
+
+1. effective-authority containment; and
+2. delegation-chain depth and loop safety.
+
+This property is implementation-neutral. Chain depth and ordering may be represented through sequence numbers, lineage records, signed delegation objects, or an equivalent mechanism.
+
 ---
 
-## INV-02 — Authority Provenance Continuity
+## INV-02 — Authority Provenance and Temporal Continuity
 
 Security-sensitive actions SHOULD retain sufficient provenance to reconstruct the authority lineage that permitted the action.
 
@@ -154,6 +170,20 @@ A security investigation should be able to determine:
 7. Which skill, tool, or API produced the effect?
 8. Which protected resource was affected?
 9. Was the relevant authorization still valid when the operation occurred?
+
+### Temporal Ordering
+
+Valid lineage alone is insufficient if delegation evidence can be replayed or applied outside its legitimate execution sequence.
+
+Authority-bearing delegation events MUST preserve valid temporal ordering. A delegation establishing authority for a task MUST precede acceptance or exercise of authority derived from that delegation.
+
+Conceptually:
+
+`DELEGATE.timestamp < TASK_ACCEPT.timestamp < AUTHORITY_EXERCISE.timestamp`
+
+A replayed, stale, expired, or temporally inconsistent delegation record MUST NOT by itself establish current effective authority.
+
+The exact representation of timestamps, sequence numbers, freshness proofs, or replay protection remains implementation-defined.
 
 ### Security Objective
 
@@ -219,9 +249,9 @@ Constraint propagation should preserve the security meaning of the originating a
 
 ---
 
-## INV-04 — Transitive Revocation Propagation
+## INV-04 — Enforcement-Boundary Revocation
 
-Revocation SHOULD invalidate unexercised downstream authority derived from the revoked authorization.
+Revocation MUST be evaluated at the relevant enforcement boundary before derived authority is exercised.
 
 Consider:
 
@@ -233,6 +263,12 @@ Conceptually:
 
 `Revoke(P→A) ⇒ Invalidate(unexercised derived authority A→B→C)`
 
+Revocation propagation across distributed or disconnected agents MAY be eventually consistent. However, an enforcement boundary MUST evaluate the currently available revocation state before permitting a security-sensitive side effect.
+
+This invariant deliberately does not prescribe a specific freshness mechanism, propagation protocol, cache lifetime, revocation token, or synchronization architecture.
+
+The normative security property is evaluation at the enforcement boundary; the mechanism by which sufficiently current revocation state reaches that boundary remains implementation-defined.
+
 This does not imply reversal of actions that have already legitimately completed.
 
 It applies to authority that remains pending or unexercised when its upstream authorization becomes invalid.
@@ -242,6 +278,34 @@ It applies to authority that remains pending or unexercised when its upstream au
 A stale downstream delegation should not survive merely because the immediate delegatee has not independently observed the upstream revocation.
 
 ---
+
+## INV-05 — Capability-Boundary Non-Amplification
+
+Effective task authority MUST NOT increase merely because execution crosses into a downstream skill, tool, API, service identity, or protected-resource capability possessing broader standing privileges.
+
+Consider:
+
+**Agent A → Agent B → Skill S → Tool T → Protected Resource R**
+
+If Agent B's effective authority for Task T permits only `read(R)`, invoking Skill S or Tool T MUST NOT make `write(R)` or `delete(R)` available to that task merely because the downstream component technically possesses those privileges.
+
+The governing distinction is:
+
+> **Credential Capability ≠ Authorized Task Authority**
+
+Conceptually, authority must remain bounded across the capability path:
+
+`EA(Resource,T) ⊆ EA(Tool,T) ⊆ EA(Skill,T) ⊆ EA(Agent,T)`
+
+where each term represents authority legitimately exercisable for the originating task rather than the component's independent standing capability.
+
+Selecting a more privileged downstream capability MUST NOT create a new authorization root.
+
+If broader authority is required, it MUST originate from an independently legitimate authorization event that is explicitly represented in the authority provenance.
+
+### Security Objective
+
+Prevent agent-to-skill, skill-to-tool, tool-to-API, or tool-to-resource transitions from laundering broader technical capability into broader effective task authority.
 
 # 4. Enforcement Boundary
 
@@ -413,7 +477,7 @@ C attempts to exercise the previously delegated authority.
 
 ### Invariant
 
-INV-04 — Transitive Revocation Propagation
+INV-04 — Enforcement-Boundary Revocation
 
 ### Failure Condition
 
@@ -457,9 +521,15 @@ However, the originating task does not authorize X.
 
 **DENY**
 
-### Invariants
+### Primary Invariant
 
-INV-01, INV-02 and INV-03
+INV-05 — Capability-Boundary Non-Amplification
+
+### Supporting Invariants
+
+INV-01 — Authority Non-Amplification  
+INV-02 — Authority Provenance and Temporal Continuity  
+INV-03 — Constraint Inheritance / Narrow-Only Delegation
 
 ### Failure Condition
 
@@ -470,6 +540,75 @@ Effective authority remains apparently constrained at the agent layer but expand
 This vector tests whether effective authority is enforced end-to-end rather than solely at agent-to-agent boundaries.
 
 ---
+
+## AV-07 — Delegation Depth / Loop Violation
+
+### Setup
+
+The implementation permits a maximum of three agent-to-agent delegation edges.
+
+The following delegation chain is valid:
+
+**A → B → C → D**
+
+### Attack
+
+D attempts to delegate the same derived authority to E, creating a fourth agent-to-agent delegation edge and exceeding the configured delegation-depth limit.
+
+Alternatively, a delegation attempts to introduce a repeated chain element such as:
+
+**A → B → C → B**
+
+### Expected Result
+
+**DENY**
+
+### Invariant
+
+INV-01 — Authority Non-Amplification / Delegation Depth and Loop Safety
+
+### Required Evidence
+
+The decision record SHOULD identify the delegation chain, configured depth limit or detected loop, violated invariant, and resulting DENY decision.
+
+### Failure Condition
+
+The implementation permits an arbitrarily deep or cyclic delegation chain merely because each individual delegation remains within the originating authority ceiling.
+
+## AV-08 — Temporal Delegation Replay
+
+### Setup
+
+Agent A previously issued a valid delegation to Agent B for Task T.
+
+The delegation was accepted and used within its legitimate execution sequence.
+
+### Attack
+
+A prior delegation record is replayed, reordered, or reused such that its temporal relationship to the current task acceptance or authority exercise is no longer valid.
+
+For example, the presented evidence would imply:
+
+`TASK_ACCEPT.timestamp < DELEGATE.timestamp`
+
+or relies on delegation state that is stale or no longer valid for the current execution.
+
+### Expected Result
+
+**DENY / RE-AUTHORIZE**
+
+### Invariant
+
+INV-02 — Authority Provenance and Temporal Continuity
+
+### Required Evidence
+
+The decision record SHOULD identify the relevant delegation event, task acceptance or authority-exercise event, temporal inconsistency, violated invariant, and resulting decision.
+
+### Failure Condition
+
+The implementation treats valid historical lineage as sufficient authority without validating whether that lineage is temporally valid for the current execution.
+
 
 # 6. Candidate Conformance Assertions
 
@@ -493,7 +632,7 @@ A downstream component MUST NOT silently remove or weaken inherited authorizatio
 
 ### C-05
 
-Revocation of upstream authority SHOULD invalidate unexercised downstream authority derived solely from the revoked authorization.
+Revocation MUST be evaluated at the relevant enforcement boundary before unexercised downstream authority derived solely from the revoked authorization is exercised.
 
 ### C-06
 
@@ -501,7 +640,7 @@ Security-sensitive actions SHOULD retain sufficient provenance to reconstruct th
 
 ### C-07
 
-Effective authority SHOULD be evaluated at, or protected by mandatory enforcement covering, the security-sensitive side-effect boundary.
+Security-sensitive side effects MUST be protected by enforcement that evaluates whether the effective authority required for the action remains valid at the relevant enforcement boundary.
 
 ### C-08
 
@@ -531,7 +670,7 @@ Instead, they define candidate runtime properties for preserving the security me
 
 1. authority does not silently amplify;
 2. constraints propagate downstream and may only be narrowed;
-3. authority provenance remains continuous;
+3. authority provenance and valid temporal ordering remain continuous;
 4. dependent downstream authority responds to upstream revocation; and
 5. downstream capabilities cannot be used to obtain effective authority unavailable to the originating task.
 
@@ -611,8 +750,27 @@ What should occur when current upstream authority or revocation state cannot be 
 For high-impact operations, should the implementation fail closed rather than assume that previously valid delegated authority remains valid?
 
 ---
+## Q7 — Revocation Freshness
 
-# 9. Proposed Verification Method
+What freshness guarantee is sufficient for revocation evaluation at an enforcement boundary when delegation spans independently operated or temporarily disconnected agents?
+
+---
+
+## Q8 — Capability Boundary Semantics
+
+Should Agent → Skill → Tool/API → Protected Resource transitions be represented as another delegation axis governed by the same authority invariants, or as a distinct capability-boundary relationship with equivalent non-amplification semantics?
+
+# 9. Conformance Matrix
+
+| Invariant | Primary Vectors | Expected Decision | Minimum Verifiable Evidence |
+|---|---|---|---|
+| INV-01 — Authority Non-Amplification | AV-01, AV-02, AV-03, AV-07 | DENY | Effective-authority ceiling, delegation chain, depth/loop state |
+| INV-02 — Provenance and Temporal Continuity | AV-02, AV-08 | DENY / RE-AUTHORIZE | Authority lineage, event ordering, authorization state |
+| INV-03 — Narrow-Only Delegation | AV-04 | DENY | Inherited constraints and attempted downstream constraints |
+| INV-04 — Enforcement-Boundary Revocation | AV-05 | DENY | Revoked ancestor, derived authority lineage, boundary decision |
+| INV-05 — Capability-Boundary Non-Amplification | AV-06 | DENY | Task authority, downstream capability, requested effect, boundary decision |
+
+# 10. Proposed Verification Method
 
 Each invariant can be associated with one or more negative verification vectors.
 
@@ -625,6 +783,37 @@ A simple methodology is:
 5. Record the violated invariant and relevant authority provenance.
 6. Confirm that the unauthorized side effect did not occur.
 
+### Attributable Rejection Requirement
+
+Rejection alone is insufficient evidence of conformance.
+
+A conforming implementation MUST produce an attributable decision indicating why the vector was rejected.
+
+At minimum, the decision evidence SHOULD identify:
+
+- the resulting decision;
+- the matched or violated invariant;
+- the originating task or authorization context;
+- the relevant authority provenance;
+- the enforcement boundary at which the violation was detected; and
+- a machine-readable or otherwise deterministic reason for the rejection.
+
+For example:
+
+    decision: DENY
+    matched_invariant: INV-05
+    originating_task: T1
+    boundary: Agent-B → Skill-S → Tool-T
+    requested_action: delete(Resource-X)
+    effective_authority: read(Resource-X)
+    reason: CAPABILITY_BOUNDARY_AUTHORITY_AMPLIFICATION
+
+An implementation that indiscriminately denies all operations MUST NOT be considered conformant merely because every negative vector results in DENY.
+
+Conformance therefore requires both:
+
+1. the expected security decision; and
+2. evidence attributing that decision to the authority property exercised by the vector.
 The negative vector then acts as a security canary.
 
 A regression exists if a later implementation permits a vector that a conforming implementation previously rejected.
@@ -633,7 +822,7 @@ This makes the proposal usable both as an architectural security model and as a 
 
 ---
 
-# 10. Conclusion
+# 11. Conclusion
 
 Multi-agent authorization must preserve security semantics beyond initial authentication and access control.
 
@@ -643,14 +832,15 @@ As execution moves through:
 
 the effective authority associated with the originating task should remain bounded, attributable, constrained, and revocable.
 
-The proposed model centers on four invariants:
+The proposed model centers on five invariants:
 
 1. **Authority Non-Amplification**
-2. **Authority Provenance Continuity**
+2. **Authority Provenance and Temporal Continuity**
 3. **Constraint Inheritance / Narrow-Only Delegation**
-4. **Transitive Revocation Propagation**
+4. **Enforcement-Boundary Revocation**
+5. **Capability-Boundary Non-Amplification**
 
-The six adversarial conformance vectors test whether these properties survive realistic multi-hop execution.
+The eight adversarial conformance vectors test whether these properties survive realistic multi-hop execution and whether rejection can be attributed to the violated authority property.
 
 The core principle is:
 
